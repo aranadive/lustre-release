@@ -24,10 +24,17 @@
 atomic_t nvfs_shutdown = ATOMIC_INIT(1);
 struct nvfs_dma_rw_ops *nvfs_ops = NULL;
 struct percpu_counter nvfs_n_ops;
+struct iokeep_cross_mr_ops *iok_ops = NULL;
+struct percpu_counter iok_n_ops;
 
 static inline long nvfs_count_ops(void)
 {
 	return percpu_counter_sum(&nvfs_n_ops);
+}
+
+static inline long iok_count_ops(void)
+{
+	return percpu_counter_sum(&iok_n_ops);
 }
 
 static struct nvfs_dma_rw_ops *nvfs_get_ops(void)
@@ -109,6 +116,33 @@ void UNREGISTER_FUNC(void)
 	percpu_counter_destroy(&nvfs_n_ops);
 }
 EXPORT_SYMBOL_GPL(UNREGISTER_FUNC);
+
+int lustre_v1_iokeep_register(struct iokeep_cross_mr_ops *ops)
+{
+	if (!ops || iok_ops != NULL)
+		return -EINVAL;
+
+	iok_ops = ops;
+	(void)percpu_counter_init(&iok_n_ops, 0, GFP_KERNEL);
+
+	atomic_set(&nvfs_shutdown, 0);
+	CDEBUG(D_NET, "registering iokeep %p\n", ops);
+	return 0;
+}
+EXPORT_SYMBOL(lustre_v1_iokeep_register);
+
+void lustre_v1_iokeep_unregister(void)
+{
+	(void)atomic_cmpxchg(&nvfs_shutdown, 0, 1);
+	do {
+		CDEBUG(D_NET, "Attempting to de-register iokeep: %ld\n",
+		       iok_count_ops());
+		msleep(NVFS_HOLD_TIME_MS);
+	} while (iok_count_ops());
+	iok_ops = NULL;
+	percpu_counter_destroy(&iok_n_ops);
+}
+EXPORT_SYMBOL(lustre_v1_iokeep_unregister);
 
 unsigned int
 lnet_get_dev_prio(struct device *dev, unsigned int dev_idx)

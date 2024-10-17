@@ -37,6 +37,19 @@ struct nvfs_dma_rw_ops {
 	unsigned int (*nvfs_device_priority) (struct device *dev, unsigned int dev_index);
 };
 
+struct iokeep_cross_mr_ops {
+	int (*iokeep_get_dma_va_addrs) (struct device *device,
+					struct scatterlist *sglist,
+					int nents,
+					enum dma_data_direction dma_dir,
+					unsigned long attrs);
+
+	int (*iokeep_put_dma_va_addrs) (struct device *device,
+					struct scatterlist *sglist,
+					int nents,
+					enum dma_data_direction dma_dir);
+};
+
 /* feature list for dma_ops, values indicate bit pos */
 enum ft_bits {
 	nvfs_ft_prep_sglist         = 1ULL << 0,

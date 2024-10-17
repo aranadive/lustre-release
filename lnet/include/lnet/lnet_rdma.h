@@ -22,9 +22,13 @@ enum dma_data_direction;
 struct scatterlist;
 
 struct nvfs_dma_rw_ops;
+struct iokeep_cross_mr_ops;
 
 int REGISTER_FUNC(struct nvfs_dma_rw_ops *ops);
 void UNREGISTER_FUNC(void);
+
+int lustre_v1_iokeep_register(struct iokeep_cross_mr_ops *ops);
+void lustre_v1_iokeep_unregister(void);
 
 unsigned int lnet_get_dev_prio(struct device *dev,
 			       unsigned int dev_idx);
