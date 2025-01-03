@@ -191,6 +191,17 @@ enum kib_dev_caps {
 	((dev)->ibd_dev_caps & IBLND_DEV_CAPS_FASTREG_ENABLED)
 
 
+struct mlx5_ib_pd {
+	struct ib_pd		ibpd;
+	u32			pdn;
+	u16			uid;
+};
+
+static inline struct mlx5_ib_pd *to_mpd(struct ib_pd *ibpd)
+{
+	return container_of(ibpd, struct mlx5_ib_pd, ibpd);
+}
+
 struct kib_dev {
 	struct list_head	ibd_list;	/* chain on kib_devs */
 	struct list_head	ibd_fail_list;	/* chain on kib_failed_devs */
@@ -223,6 +234,7 @@ struct kib_hca_dev {
 	struct ib_mr        *ibh_mrs;           /* global MR */
 #endif
 	struct ib_pd        *ibh_pd;            /* PD */
+	u32					 pdn;				/* PDN for this PD */
 	u8                   ibh_port;          /* port number */
 	struct ib_event_handler
 			     ibh_event_handler; /* IB event handler */
@@ -232,6 +244,7 @@ struct kib_hca_dev {
 #define IBLND_DEV_FATAL         2
 	struct kib_dev           *ibh_dev;           /* owner */
 	atomic_t             ibh_ref;           /* refcount */
+	u32					 xgvmi_key;			/* xgvmi key to use for host pas */
 };
 
 /** # of seconds to keep pool alive */
@@ -1070,9 +1083,10 @@ int kiblnd_dma_map_sg(struct kib_hca_dev *hdev, struct kib_tx *tx)
 	int nents = tx->tx_nfrags;
 	enum dma_data_direction direction = tx->tx_dmadir;
 
-	if (tx->tx_gpu)
+	if (tx->tx_gpu) {
 		return lnet_rdma_map_sg_attrs(hdev->ibh_ibdev->dma_device,
-					      sg, nents, direction);
+				      sg, nents, direction, &hdev->xgvmi_key);
+	}
 
 	return ib_dma_map_sg(hdev->ibh_ibdev, sg, nents, direction);
 }
@@ -1084,11 +1098,12 @@ void kiblnd_dma_unmap_sg(struct kib_hca_dev *hdev, struct kib_tx *tx)
 	int nents = tx->tx_nfrags;
 	enum dma_data_direction direction = tx->tx_dmadir;
 
-	if (tx->tx_gpu)
+	if (tx->tx_gpu) {
 		lnet_rdma_unmap_sg(hdev->ibh_ibdev->dma_device,
 					  sg, nents, direction);
-	else
+	} else {
 		ib_dma_unmap_sg(hdev->ibh_ibdev, sg, nents, direction);
+	}
 }
 
 #ifndef HAVE_OFED_IB_SG_DMA_ADDRESS

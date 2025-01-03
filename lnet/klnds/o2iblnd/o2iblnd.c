@@ -13,10 +13,12 @@
 #include <linux/ethtool.h>
 #include <linux/inetdevice.h>
 #include <linux/kernel.h>
+#include <linux/pci.h>
 #include <linux/sunrpc/addr.h>
 #include <net/addrconf.h>
 
 #include <libcfs/linux/linux-net.h>
+#include <linux/mlx5/driver.h>
 
 #include "o2iblnd.h"
 
@@ -1991,6 +1993,7 @@ int kiblnd_fmr_pool_map(struct kib_fmr_poolset *fps, struct kib_tx *tx,
 	struct kib_fmr_pool *fpo;
 	__u64 version;
 	bool is_rx = (rd != tx->tx_rd);
+
 #ifdef HAVE_OFED_FMR_POOL_API
 	__u64 *pages = tx->tx_pages;
 	bool tx_pages_mapped = false;
@@ -2027,6 +2030,7 @@ again:
 				fmr->fmr_frd  = NULL;
 				fmr->fmr_pfmr = pfmr;
 				fmr->fmr_pool = fpo;
+
 				return 0;
 			}
 		} else
@@ -2124,12 +2128,14 @@ again:
 				wr->wr.wr.fast_reg.access_flags =
 					(IB_ACCESS_LOCAL_WRITE |
 					 IB_ACCESS_REMOTE_WRITE);
+
 #endif /* HAVE_OFED_IB_MAP_MR_SG */
 
 				fmr->fmr_key  = is_rx ? mr->rkey : mr->lkey;
 				fmr->fmr_frd  = frd;
 				fmr->fmr_pool = fpo;
 				frd->frd_posted = false;
+
 				return 0;
 			}
 			spin_unlock(&fps->fps_lock);
@@ -2989,6 +2995,7 @@ kiblnd_dev_failover(struct kib_dev *dev, struct net *ns)
 	struct kib_net *net;
 	struct sockaddr_storage addr;
 	struct net_device *netdev;
+	struct mlx5_ib_pd *mlxpd;
 	unsigned long flags;
 	int rc = 0;
 	int i;
@@ -3092,6 +3099,12 @@ kiblnd_dev_failover(struct kib_dev *dev, struct net *ns)
 
 	hdev->ibh_pd = pd;
 
+	mlxpd = to_mpd(pd);
+	hdev->pdn = mlxpd->pdn;
+
+	printk(KERN_INFO "Lustre, ibpd %p, mlxpd %p, pdn %d, device %p\n",
+		pd, mlxpd, mlxpd->pdn, hdev->ibh_ibdev);
+
 	rc = rdma_listen(cmid, 0);
 	if (rc != 0) {
 		CERROR("Can't start new listener: %d\n", rc);
@@ -3115,6 +3128,13 @@ kiblnd_dev_failover(struct kib_dev *dev, struct net *ns)
 	INIT_IB_EVENT_HANDLER(&hdev->ibh_event_handler,
 				hdev->ibh_ibdev, kiblnd_event_handler);
 	ib_register_event_handler(&hdev->ibh_event_handler);
+
+	rc = lnet_rdma_store_pdn(hdev->ibh_ibdev, hdev->pdn);
+	if (rc) {
+		CERROR("Cannot store pdn in LNET: %d\n", rc);
+		ib_unregister_event_handler(&hdev->ibh_event_handler);
+		goto out;
+	}
 
 	write_lock_irqsave(&kiblnd_data.kib_global_lock, flags);
 
