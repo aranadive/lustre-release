@@ -619,6 +619,7 @@ kiblnd_fmr_map_tx(struct kib_net *net, struct kib_tx *tx,
 	 * need the rkey
 	 */
 	rd->rd_key = tx->tx_fmr.fmr_key;
+
 	/*
 	 * for FastReg or FMR with no gaps we can accumulate all
 	 * the fragments in one FastReg or FMR fragment.
@@ -631,8 +632,10 @@ kiblnd_fmr_map_tx(struct kib_net *net, struct kib_tx *tx,
 	    IS_FAST_REG_DEV(dev)) {
 		/* FMR requires zero based address */
 #ifdef HAVE_OFED_FMR_POOL_API
-		if (dev->ibd_dev_caps & IBLND_DEV_CAPS_FMR_ENABLED)
+		if (dev->ibd_dev_caps & IBLND_DEV_CAPS_FMR_ENABLED) {
+			u64 temp = rd->rd_frags[0].rf_addr;
 			rd->rd_frags[0].rf_addr &= ~hdev->ibh_page_mask;
+		}
 #endif
 		rd->rd_frags[0].rf_nob = nob;
 		rd->rd_nfrags = 1;
@@ -643,6 +646,7 @@ kiblnd_fmr_map_tx(struct kib_net *net, struct kib_tx *tx,
 		 * zero based address of each fragment.
 		 */
 		for (i = 0; i < rd->rd_nfrags; i++) {
+			u64 temp = rd->rd_frags[i].rf_addr;
 			rd->rd_frags[i].rf_addr &= ~hdev->ibh_page_mask;
 			rd->rd_frags[i].rf_addr += i << hdev->ibh_page_shift;
 		}
@@ -722,6 +726,9 @@ static int kiblnd_map_tx(struct lnet_ni *ni, struct kib_tx *tx,
                 rd->rd_frags[i].rf_addr = kiblnd_sg_dma_address(
                         hdev->ibh_ibdev, &tx->tx_frags[i]);
                 nob += rd->rd_frags[i].rf_nob;
+		printk("Lustre: %s:%d, Setting rd_frags[%d] addr 0x%llx len %d",
+			__FUNCTION__, __LINE__, i, rd->rd_frags[i].rf_addr,
+			rd->rd_frags[i].rf_nob);
         }
 
 #ifdef HAVE_OFED_IB_GET_DMA_MR
@@ -793,6 +800,7 @@ static int kiblnd_setup_rd_kiov(struct lnet_ni *ni, struct kib_tx *tx,
 
 		sg_set_page(sg, kiov->bv_page, fragnob,
 			    kiov->bv_offset + offset);
+
 		sg = sg_next(sg);
 
 		offset = 0;
@@ -914,6 +922,11 @@ __must_hold(&conn->ibc_lock)
 		struct ib_send_wr *bad = &tx->tx_wrq[tx->tx_nwrq - 1].wr;
 		struct ib_send_wr *wr  = &tx->tx_wrq[0].wr;
 
+		if (wr->opcode == 0) {
+			printk("Lustre: %s:%d Posting a wr 0x%llx opcode %d lkey 0x%x rkey 0x%x\n",
+				__FUNCTION__, __LINE__, wr->wr_id, wr->opcode, wr->sg_list[0].lkey,
+				rdma_wr((const struct ib_send_wr *)wr)->rkey);
+		}
 		if (frd != NULL && !frd->frd_posted) {
 			wr = &frd->frd_inv_wr.wr;
 			wr->next = &frd->frd_fastreg_wr.wr;
@@ -1212,10 +1225,21 @@ kiblnd_init_rdma(struct kib_conn *conn, struct kib_tx *tx, int type,
 			       kiblnd_rd_frag_size(dstrd, dstidx),
 			       resid);
 
+		// XXX: Why is this only doing 1 sge and not 8 separate ones?
+		// Should be printing 8 times if there are 8 fragments
 		sge = &tx->tx_sge[tx->tx_nsge];
 		sge->addr   = kiblnd_rd_frag_addr(srcrd, srcidx);
-		sge->lkey   = kiblnd_rd_frag_key(srcrd, srcidx);
+		if (conn->ibc_hdev->xgvmi_key != 0) {
+			printk("Lustre: %s:%d, Using xgvmi key 0x%x",
+					__FUNCTION__, __LINE__, conn->ibc_hdev->xgvmi_key);
+			sge->lkey = conn->ibc_hdev->xgvmi_key;
+		} else {
+			sge->lkey   = kiblnd_rd_frag_key(srcrd, srcidx);
+		}
 		sge->length = sge_nob;
+
+		printk("Lustre: %s:%d RDMA SGE Addr 0x%llx Lkey 0x%x Length %d\n",
+			__FUNCTION__, __LINE__, sge->addr, sge->lkey, sge->length);
 
 		if (wrq_sge == 0) {
 			wrq = &tx->tx_wrq[tx->tx_nwrq];
@@ -1231,6 +1255,8 @@ kiblnd_init_rdma(struct kib_conn *conn, struct kib_tx *tx, int type,
 								      dstidx);
 			wrq->rkey		= kiblnd_rd_frag_key(dstrd,
 								     dstidx);
+			printk("Lustre: %s:%d OFED IB RDMA WRITE Op id 0x%llx rkey 0x%x raddr 0x%llx\n",
+				__FUNCTION__, __LINE__, wrq->wr.wr_id, wrq->rkey, wrq->remote_addr);
 #else
 			wrq->wr.wr.rdma.remote_addr = kiblnd_rd_frag_addr(dstrd,
 									dstidx);
@@ -1606,8 +1632,9 @@ kiblnd_launch_tx(struct lnet_ni *ni, struct kib_tx *tx, struct lnet_nid *nid)
 
 		read_unlock_irqrestore(g_lock, flags);
 
-		if (tx != NULL)
+		if (tx != NULL) {
 			kiblnd_queue_tx(tx, conn);
+		}
 		kiblnd_conn_decref(conn); /* ...to here */
 		return;
 	}
@@ -1760,6 +1787,7 @@ kiblnd_send(struct lnet_ni *ni, void *private, struct lnet_msg *lntmsg)
 
 		rd = &ibmsg->ibm_u.get.ibgm_rd;
 		tx->tx_gpu = gpu;
+
 		rc = kiblnd_setup_rd_kiov(ni, tx, rd,
 					  msg_md->md_niov,
 					  msg_md->md_kiov,
@@ -1840,6 +1868,7 @@ kiblnd_send(struct lnet_ni *ni, void *private, struct lnet_msg *lntmsg)
 						 nob, payload_nob);
 
 		rd = tx->tx_rd;
+
 		rc = kiblnd_setup_rd_kiov(ni, tx, rd,
 					  payload_niov, payload_kiov,
 					  payload_offset, payload_nob);
@@ -1969,6 +1998,7 @@ kiblnd_recv(struct lnet_ni *ni, void *private, struct lnet_msg *lntmsg,
 	LASSERT (mlen <= rlen);
 	LASSERT (!in_interrupt());
 
+	//printk("Lustre: %s Recv data msg type %d\n", __FUNCTION__, rxmsg->ibm_type);
 	switch (rxmsg->ibm_type) {
 	default:
 		LBUG();

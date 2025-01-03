@@ -42,12 +42,18 @@ struct iokeep_cross_mr_ops {
 					struct scatterlist *sglist,
 					int nents,
 					enum dma_data_direction dma_dir,
-					unsigned long attrs);
+					unsigned long attrs,
+					u32 *xgvmi_key);
 
 	int (*iokeep_put_dma_va_addrs) (struct device *device,
 					struct scatterlist *sglist,
 					int nents,
 					enum dma_data_direction dma_dir);
+
+	void (*iokeep_store_dev_pdn) (struct ib_device *device,
+					uint32_t pdn);
+
+	int (*iokeep_page_check) (struct page *page);
 };
 
 /* feature list for dma_ops, values indicate bit pos */

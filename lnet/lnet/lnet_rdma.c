@@ -27,6 +27,9 @@ struct percpu_counter nvfs_n_ops;
 struct iokeep_cross_mr_ops *iok_ops = NULL;
 struct percpu_counter iok_n_ops;
 
+uint32_t mypdn = 0;
+struct ib_device *mydevice = NULL;
+
 static inline long nvfs_count_ops(void)
 {
 	return percpu_counter_sum(&nvfs_n_ops);
@@ -50,6 +53,21 @@ static struct nvfs_dma_rw_ops *nvfs_get_ops(void)
 static inline void nvfs_put_ops(void)
 {
 	percpu_counter_dec(&nvfs_n_ops);
+}
+
+static struct iokeep_cross_mr_ops *iok_get_ops(void)
+{
+	if (!iok_ops || atomic_read(&nvfs_shutdown))
+		return NULL;
+
+	percpu_counter_inc(&iok_n_ops);
+
+	return iok_ops;
+}
+
+static inline void iok_put_ops(void)
+{
+	percpu_counter_dec(&iok_n_ops);
 }
 
 static inline bool nvfs_check_feature_set(struct nvfs_dma_rw_ops *ops)
@@ -127,6 +145,11 @@ int lustre_v1_iokeep_register(struct iokeep_cross_mr_ops *ops)
 
 	atomic_set(&nvfs_shutdown, 0);
 	CDEBUG(D_NET, "registering iokeep %p\n", ops);
+
+	if (mypdn && mydevice) {
+		iok_ops->iokeep_store_dev_pdn(mydevice, mypdn);
+	}
+
 	return 0;
 }
 EXPORT_SYMBOL(lustre_v1_iokeep_register);
@@ -181,9 +204,10 @@ lnet_get_dev_idx(struct page *page)
 }
 
 int lnet_rdma_map_sg_attrs(struct device *dev, struct scatterlist *sg,
-			   int nents, enum dma_data_direction direction)
+			   int nents, enum dma_data_direction direction, u32 *xgvmi_key)
 {
 	struct nvfs_dma_rw_ops *nvfs_ops = nvfs_get_ops();
+	struct iokeep_cross_mr_ops *iok_ops = iok_get_ops();
 
 	if (nvfs_ops) {
 		int count;
@@ -203,6 +227,14 @@ int lnet_rdma_map_sg_attrs(struct device *dev, struct scatterlist *sg,
 			return count;
 	}
 
+	if (iok_ops) {
+		int count = iok_ops->iokeep_get_dma_va_addrs(dev, sg, nents, direction,
+							DMA_ATTR_NO_WARN, xgvmi_key);
+		iok_put_ops();
+
+		return count;
+	}
+
 	return 0;
 }
 EXPORT_SYMBOL(lnet_rdma_map_sg_attrs);
@@ -212,6 +244,7 @@ int lnet_rdma_unmap_sg(struct device *dev,
 		       enum dma_data_direction direction)
 {
 	struct nvfs_dma_rw_ops *nvfs_ops = nvfs_get_ops();
+	struct iokeep_cross_mr_ops *iok_ops = iok_get_ops();
 
 	if (nvfs_ops) {
 		int count;
@@ -228,6 +261,14 @@ int lnet_rdma_unmap_sg(struct device *dev,
 		}
 	}
 
+	if (iok_ops) {
+		int count = iok_ops->iokeep_put_dma_va_addrs(dev, sg, nents, direction);
+
+		iok_put_ops();
+
+		return count;
+	}
+
 	return 0;
 }
 EXPORT_SYMBOL(lnet_rdma_unmap_sg);
@@ -237,6 +278,7 @@ lnet_is_rdma_only_page(struct page *page)
 {
 	bool is_gpu_page = false;
 	struct nvfs_dma_rw_ops *nvfs_ops;
+	struct iokeep_cross_mr_ops *iokops;
 
 	LASSERT(page != NULL);
 
@@ -245,6 +287,39 @@ lnet_is_rdma_only_page(struct page *page)
 		is_gpu_page = nvfs_ops->nvfs_is_gpu_page(page);
 		nvfs_put_ops();
 	}
+
+	iokops = iok_get_ops();
+	if (iokops != NULL) {
+		is_gpu_page = iokops->iokeep_page_check(page);
+
+		iok_put_ops();
+	}
+
 	return is_gpu_page;
 }
 EXPORT_SYMBOL(lnet_is_rdma_only_page);
+
+int
+lnet_rdma_store_pdn(struct ib_device *dev, uint32_t pdn)
+{
+	struct iokeep_cross_mr_ops *iokops;
+
+	if (pdn != 0)
+		mypdn = pdn;
+	else
+		return -EINVAL;
+	if (dev != NULL)
+		mydevice = dev;
+	else
+		return -EINVAL;
+
+	iokops = iok_get_ops();
+	if (iokops != NULL) {
+		iokops->iokeep_store_dev_pdn(mydevice, mypdn);
+
+		iok_put_ops();
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(lnet_rdma_store_pdn);
