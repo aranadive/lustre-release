@@ -1753,9 +1753,11 @@ static int kiblnd_alloc_freg_pool(struct kib_fmr_poolset *fps,
 						IB_MR_TYPE_MEM_REG,
 #endif
 					  IBLND_MAX_RDMA_FRAGS);
+
 		if ((*kiblnd_tunables.kib_use_fastreg_gaps == 1) &&
-		    (dev_caps & IBLND_DEV_CAPS_FASTREG_GAPS_SUPPORT))
+		    (dev_caps & IBLND_DEV_CAPS_FASTREG_GAPS_SUPPORT)) {
 			CWARN("using IB_MR_TYPE_SG_GAPS, expect a performance drop\n");
+		}
 #endif
 		if (IS_ERR(frd->frd_mr)) {
 			rc = PTR_ERR(frd->frd_mr);
@@ -2843,6 +2845,12 @@ kiblnd_hdev_get_attr(struct kib_hca_dev *hdev)
 	if (dev_attr->device_cap_flags & IB_DEVICE_MEM_MGT_EXTENSIONS) {
 		LCONSOLE_INFO("Using FastReg for registration\n");
 		hdev->ibh_dev->ibd_dev_caps |= IBLND_DEV_CAPS_FASTREG_ENABLED;
+#if 1
+		if (dev_attr->kernel_cap_flags & IBK_SG_GAPS_REG) {
+			printk("Lustre: %s:%d Found SG GAPS Def\n", __FUNCTION__, __LINE__);
+			hdev->ibh_dev->ibd_dev_caps |= IBLND_DEV_CAPS_FASTREG_GAPS_SUPPORT;
+		}
+#endif /* IBK_SG_GAPS_REG */
 #ifndef HAVE_OFED_IB_ALLOC_FAST_REG_MR
 #ifdef IB_DEVICE_SG_GAPS_REG
 		if (dev_attr->device_cap_flags & IB_DEVICE_SG_GAPS_REG)
@@ -3102,8 +3110,8 @@ kiblnd_dev_failover(struct kib_dev *dev, struct net *ns)
 	mlxpd = to_mpd(pd);
 	hdev->pdn = mlxpd->pdn;
 
-	printk(KERN_INFO "Lustre, ibpd %p, mlxpd %p, pdn %d, device %p\n",
-		pd, mlxpd, mlxpd->pdn, hdev->ibh_ibdev);
+	printk("Lustre: %s:%d ibpd %p, mlxpd %p, pdn %d, device %p\n",
+		__FUNCTION__, __LINE__, pd, mlxpd, mlxpd->pdn, hdev->ibh_ibdev);
 
 	rc = rdma_listen(cmid, 0);
 	if (rc != 0) {

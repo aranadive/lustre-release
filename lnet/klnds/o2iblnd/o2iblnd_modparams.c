@@ -87,7 +87,7 @@ static int concurrent_sends;
 module_param(concurrent_sends, int, 0444);
 MODULE_PARM_DESC(concurrent_sends, "send work-queue sizing");
 
-static int use_fastreg_gaps;
+static int use_fastreg_gaps = 1;
 module_param(use_fastreg_gaps, int, 0444);
 MODULE_PARM_DESC(use_fastreg_gaps, "Enable discontiguous fastreg fragment support. Expect performance drop");
 

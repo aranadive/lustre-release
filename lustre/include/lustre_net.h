@@ -501,8 +501,11 @@
  * At least one page (for large PAGE_SIZE), or 16 KiB, but not more
  * than the available space aligned to a page boundary.
  */
-#define OBD_DEF_SHORT_IO_BYTES	min(max(PAGE_SIZE, 16UL * 1024UL), \
-				    OST_MAX_SHORT_IO_BYTES)
+/*
+ * #define OBD_DEF_SHORT_IO_BYTES	min(max(PAGE_SIZE, 16UL * 1024UL), \
+ *				    OST_MAX_SHORT_IO_BYTES)
+ */
+#define OBD_DEF_SHORT_IO_BYTES	4095
 
 #define OST_MAXREPSIZE		(9 * 1024)
 #define OST_IO_MAXREPSIZE	OST_MAXREPSIZE
