@@ -568,7 +568,10 @@ kiblnd_fmr_map_tx(struct kib_net *net, struct kib_tx *tx,
 	struct kib_dev *dev;
 	struct kib_fmr_poolset *fps;
 	int			cpt;
-	int			rc;
+	int			rc, i;
+	struct kib_rdma_frag sing_elem;
+	bool do_coalesce = true;
+	u32 nobs;
 
 	LASSERT(tx->tx_pool != NULL);
 	LASSERT(tx->tx_pool->tpo_pool.po_owner != NULL);
@@ -642,22 +645,33 @@ kiblnd_fmr_map_tx(struct kib_net *net, struct kib_tx *tx,
 #endif
 		rd->rd_frags[0].rf_nob = nob;
 		rd->rd_nfrags = 1;
-	} 
-#if 0
-	else {
+	} else {
 		/*
 		 * We're transmitting with gaps using FMR.
-		 * We'll need to use multiple fragments and identify the
-		 * zero based address of each fragment.
+		 * Lets check if we can coalesce addresses and use a single fragment if possible.
 		 */
-		//printk("Lustre: %s:%d Using FMR GAPS for SGE addrs\n",
-		//	__FUNCTION__, __LINE__);
-		//for (i = 0; i < rd->rd_nfrags; i++) {
-		//	rd->rd_frags[i].rf_addr &= ~hdev->ibh_page_mask;
-		//	rd->rd_frags[i].rf_addr += i << hdev->ibh_page_shift;
-		//}
+		if (rd->rd_nfrags > 1) {
+			sing_elem.rf_nob = rd->rd_frags[0].rf_nob;
+			sing_elem.rf_addr = rd->rd_frags[0].rf_addr;
+			for (i = 1, nobs = rd->rd_frags[0].rf_nob; i < rd->rd_nfrags; i++) {
+				if (rd->rd_frags[i].rf_addr == sing_elem.rf_addr + nobs) {
+					sing_elem.rf_nob += rd->rd_frags[i].rf_nob;
+				} else {
+					do_coalesce = false;
+					break;
+				}
+				nobs += rd->rd_frags[i].rf_nob;
+			}
+
+			if (do_coalesce) {
+				//printk("Lustre: %s:%d Coalescing WR into single addr 0x%llx nob 0x%x\n",
+				//	__FUNCTION__, __LINE__, sing_elem.rf_addr, sing_elem.rf_nob);
+				rd->rd_frags[0].rf_nob = sing_elem.rf_nob;
+				rd->rd_frags[0].rf_addr = sing_elem.rf_addr;
+				rd->rd_nfrags = 1;
+			}
+		}
 	}
-#endif
 
 	return 0;
 }
@@ -728,12 +742,16 @@ static int kiblnd_map_tx(struct lnet_ni *ni, struct kib_tx *tx,
 	tx->tx_nfrags = nfrags;
 
 	rd->rd_nfrags = kiblnd_dma_map_sg(hdev, tx);
+
+	/* XXX: Set the rd_frags to coalescing if addresses are contiguous. */
+	/* Check if SG GAPS is enabled. */
+
         for (i = 0, nob = 0; i < rd->rd_nfrags; i++) {
-                rd->rd_frags[i].rf_nob  = kiblnd_sg_dma_len(
-                        hdev->ibh_ibdev, &tx->tx_frags[i]);
-                rd->rd_frags[i].rf_addr = kiblnd_sg_dma_address(
-                        hdev->ibh_ibdev, &tx->tx_frags[i]);
-                nob += rd->rd_frags[i].rf_nob;
+		rd->rd_frags[i].rf_nob  = kiblnd_sg_dma_len(
+				hdev->ibh_ibdev, &tx->tx_frags[i]);
+		rd->rd_frags[i].rf_addr = kiblnd_sg_dma_address(
+				hdev->ibh_ibdev, &tx->tx_frags[i]);
+		nob += rd->rd_frags[i].rf_nob;
 #if 0
 		if (rd->rd_frags[i].rf_nob >= 4096) {
 			printk("Lustre: %s:%d, Setting rd_frags[%d] addr 0x%llx len %d",
